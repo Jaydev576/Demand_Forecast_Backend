@@ -6,8 +6,8 @@ from fastapi_mail import ConnectionConfig, FastMail, MessageSchema, MessageType
 import auth
 import crud
 import schemas
-from database import get_db
-from config import settings
+from db import get_db
+from settings import settings
 
 router = APIRouter()
 

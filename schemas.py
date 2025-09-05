@@ -24,3 +24,13 @@ class TokenData(BaseModel):
 class LoginRequest(BaseModel):
     email: str
     password: str
+
+class UploadBase(BaseModel):
+    filename: str
+    key: str
+    bucket: str
+    size_bytes: int
+    content_type: str
+
+class UploadCreate(UploadBase):
+    user_id: int

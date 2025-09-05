@@ -35,3 +35,18 @@ def verify_user_email(db: Session, user: models.User):
     db.commit()
     db.refresh(user)
     return user
+
+
+def create_upload(db: Session, upload: schemas.UploadCreate):
+    db_upload = models.Upload(
+        user_id=upload.user_id,
+        filename=upload.filename,
+        key=upload.key,
+        bucket=upload.bucket,
+        size_bytes=upload.size_bytes,
+        content_type=upload.content_type
+    )
+    db.add(db_upload)
+    db.commit()
+    db.refresh(db_upload)
+    return db_upload
