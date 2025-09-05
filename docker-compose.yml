@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres
+    container_name: fastapi_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: fastapi_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - fastapi_db_data:/var/lib/postgresql/data
+    restart: always
+
+volumes:
+  fastapi_db_data:
