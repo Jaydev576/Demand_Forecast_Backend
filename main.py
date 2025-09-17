@@ -12,6 +12,6 @@ from routers import users, uploads
 app.include_router(users.router, prefix="/user")
 # app.include_router(uploads.router, prefix="/upload")
 
-@app.get("/test")
+@app.get("/")
 def read_root():
-    return {"check": "Hello World!"}
+    return {"massage": "Welcome to backend!!"}
