@@ -8,3 +8,10 @@ python-dotenv
 fastapi-mail
 boto3
 python-multipart
+xgboost
+lightgbm
+plotly
+pandas
+numpy
+scikit-learn
+holidays

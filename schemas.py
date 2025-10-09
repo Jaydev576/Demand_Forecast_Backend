@@ -1,3 +1,4 @@
+from typing import Optional
 from pydantic import BaseModel
 
 class UserBase(BaseModel):
@@ -34,3 +35,21 @@ class UploadBase(BaseModel):
 
 class UploadCreate(UploadBase):
     user_id: int
+
+class UploadCompleteRequest(BaseModel):
+    upload_id: int
+    s3_key: str
+
+class TrainResponse(BaseModel):
+    message: str
+    model_type: str
+    metrics: dict
+    sample_fig_json: dict
+
+class PredictRequest(BaseModel):
+    product_category: str
+    product: str
+    city: str
+    num_days: int = 30
+    price: Optional[float] = None
+    discount: Optional[float] = None
