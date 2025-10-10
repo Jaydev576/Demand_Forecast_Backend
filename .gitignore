@@ -2,3 +2,5 @@
 _pycache_
 venv
 routes/__pycache__
+models
+data
