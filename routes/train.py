@@ -7,12 +7,14 @@ import pandas as pd
 
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
-
+from fastapi.encoders import jsonable_encoder
 import plotly.express as px
 import plotly.graph_objects as go
 from fastapi import APIRouter, Depends, File, HTTPException, Query
 from schemas import PredictRequest, TrainResponse
 from utils import generate_future_features, get_csv_data, preprocess_and_feature_engineer, sequential_predict, train_models_and_select
+import boto3
+import os
 
 router = APIRouter()
 
@@ -23,12 +25,31 @@ DATA_DF: Optional[pd.DataFrame] = get_csv_data()
 LABEL_ENCODERS = {}
 FEATURES = []
 TARGET = "quantity_sold"
-MODEL_PATH = "../best_demand_model.pkl"
-MODEL_META_PATH = "../model_meta.joblib"
-MODEL_TYPE = None  # 'xgb' or 'lgb'
+MODEL_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'models', 'latest_model.pkl'))
+MODEL_META_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'models'))
+MODEL_TYPE = 'xgb' # 'xgb' or 'lgb'
+# BEST_MODEL = joblib.load(MODEL_PATH)
 BEST_MODEL = None
 
-
+# Helper to get latest CSV name from S3 uploads folder
+def get_latest_csv_key():
+    try:
+        from settings import settings
+        s3 = boto3.client(
+            "s3",
+            region_name=getattr(settings, "AWS_REGION", None),
+            aws_access_key_id=getattr(settings, "AWS_ACCESS_KEY_ID", None),
+            aws_secret_access_key=getattr(settings, "AWS_SECRET_ACCESS_KEY", None),
+        )
+        bucket_name = getattr(settings, "S3_BUCKET_NAME", None)
+        response = s3.list_objects_v2(Bucket=bucket_name, Prefix='uploads/')
+        if 'Contents' not in response or not response['Contents']:
+            return None
+        latest_obj = max(response['Contents'], key=lambda x: x['LastModified'])
+        return latest_obj['Key']
+    except Exception as e:
+        print(f"Error getting latest CSV from S3: {e}")
+        return None
 # ------------------------------
 # API Endpoints
 # ------------------------------
@@ -40,21 +61,45 @@ def train_pipeline():
     """
     global DATA_DF, LABEL_ENCODERS, FEATURES, BEST_MODEL, MODEL_TYPE
 
-
     print('starting training pipeline...')
     if DATA_DF is None:
         raise HTTPException(status_code=400, detail="No dataset uploaded. Use /upload-csv first.")
 
-    df_proc = preprocess_and_feature_engineer(DATA_DF)
+    df_proc, LABEL_ENCODERS, FEATURES, TARGET = preprocess_and_feature_engineer(DATA_DF)
     print(df_proc.head())
-    FEATURES = df_proc.columns.tolist()
     print(FEATURES)
     best_model, model_type, metrics = train_models_and_select(df_proc, FEATURES, TARGET)
     print(f"Best model: {model_type} with metrics: {metrics}")
 
-    # persist
-    joblib.dump(best_model, MODEL_PATH)
-    joblib.dump({"model_type": model_type, "features": FEATURES, "label_encoders": LABEL_ENCODERS}, MODEL_META_PATH)
+    # Get CSV filename for model naming
+    csv_key = get_latest_csv_key()
+    if csv_key is None:
+        raise HTTPException(status_code=400, detail="No CSV found in S3 uploads/")
+    csv_filename = os.path.basename(csv_key)
+    model_filename = f"{os.path.splitext(csv_filename)[0]}_model.pkl"
+    local_model_path = os.path.join(MODEL_META_PATH, model_filename)
+    meta_filename = f"{os.path.splitext(csv_filename)[0]}_meta.pkl"
+    local_meta_path = os.path.join(MODEL_META_PATH, meta_filename)
+
+    # persist locally
+    joblib.dump(best_model, local_model_path)
+    joblib.dump({"model_type": model_type, "features": FEATURES, "label_encoders": LABEL_ENCODERS, "processed_df": df_proc}, local_meta_path)
+
+    # Upload model to S3
+    try:
+        from settings import settings
+        s3 = boto3.client(
+            "s3",
+            region_name=getattr(settings, "AWS_REGION", None),
+            aws_access_key_id=getattr(settings, "AWS_ACCESS_KEY_ID", None),
+            aws_secret_access_key=getattr(settings, "AWS_SECRET_ACCESS_KEY", None),
+        )
+        with open(local_model_path, "rb") as f:
+            s3.upload_fileobj(f, settings.S3_BUCKET_NAME, f"models/{model_filename}")
+        with open(local_meta_path, "rb") as f:
+            s3.upload_fileobj(f, settings.S3_BUCKET_NAME, f"models/{meta_filename}")
+    except Exception as e:
+        print(f"Error uploading model/meta to S3: {e}")
 
     BEST_MODEL = best_model
     MODEL_TYPE = model_type
@@ -89,6 +134,10 @@ def predict(req: PredictRequest):
     Returns a JSON with predictions and a Plotly figure JSON (history + future).
     """
     global DATA_DF, BEST_MODEL, MODEL_TYPE, LABEL_ENCODERS, FEATURES
+    model_folder_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'models'))
+    MODEL_META_PATH = os.path.join(model_folder_path, 'e88d8e9598f34806b67d8dbcee7232fc_meta.pkl')
+    MODEL_PATH = os.path.join(model_folder_path, 'e88d8e9598f34806b67d8dbcee7232fc_model.pkl')
+    BEST_MODEL = joblib.load(MODEL_PATH)
 
     if DATA_DF is None:
         raise HTTPException(status_code=400, detail="No dataset uploaded. Use /upload-csv first.")
@@ -100,13 +149,17 @@ def predict(req: PredictRequest):
             MODEL_TYPE = meta.get('model_type')
             FEATURES = meta.get('features')
             LABEL_ENCODERS = meta.get('label_encoders', {})
+            df_proc = meta.get('processed_df')
+            print(BEST_MODEL, MODEL_TYPE, FEATURES, LABEL_ENCODERS, df_proc)
         else:
             raise HTTPException(status_code=400, detail="Model not trained. Call /train first.")
 
+    # getting requirements
+    base_df, LABEL_ENCODERS, FEATURES, target = preprocess_and_feature_engineer(DATA_DF)
     # prepare future features
-    future_df, hist_df = generate_future_features(
+    future_df, hist_df, FEATURES = generate_future_features(
         req.product_category, req.product, req.city, num_days=req.num_days,
-        base_df=preprocess_and_feature_engineer(DATA_DF),
+        base_df=base_df,
         price=req.price, discount=req.discount
     )
 
@@ -138,8 +191,10 @@ def predict(req: PredictRequest):
     except Exception:
         fi_json = None
 
+    future_preds['date'] = future_preds['date'].astype(str)
     # return predictions table and figures as JSON
     preds_table = future_preds[['date', 'predicted_quantity_sold']].to_dict(orient='records')
+    print(future_preds[['date', 'predicted_quantity_sold']])
     return JSONResponse({
         "product": req.product,
         "city": req.city,

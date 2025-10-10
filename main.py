@@ -14,6 +14,7 @@ origins = [
     "http://127.0.0.1",
     "http://localhost:3000",
     "http://localhost:5173", 
+    "http://localhost:5473",
 ]
 
 # Add CORS middleware
@@ -28,6 +29,7 @@ app.add_middleware(
 app.include_router(users.router, prefix="/user")
 app.include_router(uploads.router, prefix="/upload")
 app.include_router(train.router, prefix="/train")
+
 
 @app.get("/api")
 def read_root():

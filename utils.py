@@ -1,4 +1,5 @@
-from typing import List, Optional
+from typing import List, Optional, Tuple, Dict
+from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 import boto3
 from fastapi import HTTPException
 import numpy as np
@@ -12,7 +13,7 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 import xgboost as xgb
-import lightgbm as lgb
+
 
 from settings import settings
 
@@ -130,7 +131,7 @@ def preprocess_and_feature_engineer(df: pd.DataFrame):
         if f not in df.columns:
             df[f] = 0
 
-    return df[FEATURES + target + ['date']]
+    return df, LABEL_ENCODERS, FEATURES, target
 
 def train_models_and_select(df: pd.DataFrame, features: List[str], target: str):
     """
@@ -326,13 +327,18 @@ def generate_future_features(product_category: str, product: str, city: str, num
         })
 
     future_df = pd.DataFrame(rows)
-    return future_df, prod_df
+    FEATURES = [f for f in FEATURES if f != 'quantity_sold']  # exclude target
+    # print(f"future_df info : {future_df.info()}")
+    return future_df, prod_df,FEATURES
 
 def sequential_predict(model, model_type: str, future_df: pd.DataFrame, historical_df: pd.DataFrame, features: List[str]):
     """
     Predict sequentially for future_df updating lags/rolling using predicted values (approx).
     Returns future_df with 'predicted_quantity_sold'
     """
+    # print(f"future df : {future_df.info()}")
+    # print(f"features : {features}")
+    # print(f"hist df : {historical_df.info()}")
     preds = []
     hist = historical_df.copy().reset_index(drop=True)
     rolling_7 = list(hist['quantity_sold'].tail(6))
@@ -369,8 +375,11 @@ def sequential_predict(model, model_type: str, future_df: pd.DataFrame, historic
             row.loc[:, 'quantity_sold_roll_std_30'] = np.std(rolling_30)
 
         X = row[features]
+        # print(f"is X contains quantity_sold : {X['quantity_sold'].head(3)}")
+        # print(f"x contains {X.columns}")
         pred = model.predict(X)[0]
         pred = max(0, float(pred))
+        # print(pred)
         preds.append(pred)
 
     future_df = future_df.copy()
