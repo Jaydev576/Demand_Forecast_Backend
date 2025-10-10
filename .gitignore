@@ -1,6 +1,21 @@
+# ===== Python build & cache files =====
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ===== Virtual environment =====
+env/
+venv/
+.venv/
+
+
+# ===== Data & large model files =====
+data/
+models/*.pkl
+models/*.joblib
+
+
+# ===== Environment files =====
 .env
-_pycache_
-venv
-routes/__pycache__
-models
-data
+.env.*
