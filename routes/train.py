@@ -83,7 +83,7 @@ def train_pipeline():
 
     # persist locally
     joblib.dump(best_model, local_model_path)
-    joblib.dump({"model_type": model_type, "features": FEATURES, "label_encoders": LABEL_ENCODERS, "processed_df": df_proc}, local_meta_path)
+    joblib.dump({"model_type": model_type, "features": FEATURES, "label_encoders": LABEL_ENCODERS}, local_meta_path)
 
     # Upload model to S3
     try:
@@ -149,13 +149,15 @@ def predict(req: PredictRequest):
             MODEL_TYPE = meta.get('model_type')
             FEATURES = meta.get('features')
             LABEL_ENCODERS = meta.get('label_encoders', {})
-            df_proc = meta.get('processed_df')
-            print(BEST_MODEL, MODEL_TYPE, FEATURES, LABEL_ENCODERS, df_proc)
+            # df_proc = meta.get('processed_df')
+            # print(BEST_MODEL, MODEL_TYPE, FEATURES, LABEL_ENCODERS)
         else:
             raise HTTPException(status_code=400, detail="Model not trained. Call /train first.")
 
+
     # getting requirements
     base_df, LABEL_ENCODERS, FEATURES, target = preprocess_and_feature_engineer(DATA_DF)
+    
     # prepare future features
     future_df, hist_df, FEATURES = generate_future_features(
         req.product_category, req.product, req.city, num_days=req.num_days,
