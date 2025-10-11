@@ -13,8 +13,7 @@ venv/
 
 # ===== Data & large model files =====
 data/
-models/*.pkl
-models/*.joblib
+models/**
 
 
 # ===== Environment files =====
