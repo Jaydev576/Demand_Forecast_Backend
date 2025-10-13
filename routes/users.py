@@ -51,8 +51,6 @@ async def send_verification_email(email: str, username: str, token: str):
             )
 
 
-
-
 @router.post("/signup")
 async def create_user(user: schemas.UserCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     try:
