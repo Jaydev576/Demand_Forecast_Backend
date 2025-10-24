@@ -68,6 +68,22 @@ def get_upload_by_key(db: Session, key: str) -> Optional[models.Upload]:
 def list_uploads_for_user(db: Session, user_id: int, skip: int = 0, limit: int = 100) -> List[models.Upload]:
     return db.query(models.Upload).filter(models.Upload.user_id == user_id).offset(skip).limit(limit).all()
 
+
+# -----------------------
+# Upload helpers
+# -----------------------
+def get_upload_s3_key(db: Session, upload_id: int) -> Optional[str]:
+    upload = db.query(models.Upload).filter(models.Upload.id == upload_id).first()
+    if upload:
+        return upload.key
+    return None
+
+def get_userid_by_upload(db: Session, upload_id: int) -> Optional[int]:
+    upload = db.query(models.Upload).filter(models.Upload.id == upload_id).first()
+    if upload:
+        return upload.user_id
+    return None
+
 # -----------------------
 # Forecast helpers
 # -----------------------
@@ -250,3 +266,30 @@ def get_forecasts_count(db: Session) -> int:
 
 def get_training_runs_count(db: Session) -> int:
     return db.query(models.TrainingRun).count()
+
+def get_distinct_features(db: Session, user_id: int) -> Optional[models.DistinctFeature]:
+    return (
+        db.query(models.DistinctFeature)
+        .filter(models.DistinctFeature.user_id == user_id)
+        .order_by(models.DistinctFeature.id.desc())
+        .first()
+    )
+
+def create_business_insight(db: Session, insight: schemas.BusinessInsightCreate) -> models.BusinessInsight:
+    db_insight = models.BusinessInsight(
+        user_id=insight.user_id,
+        kpis=insight.kpis,
+        charts=insight.charts,
+    )
+    db.add(db_insight)
+    db.commit()
+    db.refresh(db_insight)
+    return db_insight
+
+def get_latest_business_insight(db: Session, user_id: int) -> Optional[models.BusinessInsight]:
+    return (
+        db.query(models.BusinessInsight)
+        .filter(models.BusinessInsight.user_id == user_id)
+        .order_by(models.BusinessInsight.created_at.desc())
+        .first()
+    )

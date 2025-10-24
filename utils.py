@@ -1,19 +1,19 @@
 # utils.py
+from models import DistinctFeature
 from typing import List, Optional, Tuple, Dict
 import boto3
 from fastapi import HTTPException
+from fastapi.params import Depends
+from sqlalchemy.orm import Session
 import numpy as np
 import pandas as pd
 from datetime import timedelta, datetime
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import xgboost as xgb
+import crud
+from db import get_db
 from settings import settings
-
-# Globals (updated by preprocess)
-LABEL_ENCODERS: Dict[str, LabelEncoder] = {}
-FEATURES: List[str] = []
-TARGET = "quantity_sold"
 
 # allowed categorical columns we will encode
 CATEGORICAL_COLS = ['product_category', 'product', 'city', 'season']
@@ -29,22 +29,28 @@ def _get_s3_client():
         aws_secret_access_key=getattr(settings, "AWS_SECRET_ACCESS_KEY", None),
     )
 
-def get_csv_data() -> Optional[pd.DataFrame]:
+def get_csv_data(upload_id: int, db: Session) -> Optional[pd.DataFrame]:
     """
-    Loads the CSV data from S3 (the latest uploaded one under uploads/).
+    Loads the CSV data from S3 for given upload_id.
     Returns a DataFrame or None if not found.
     """
+    if not upload_id:
+        return None
+    
     s3 = _get_s3_client()
     bucket_name = settings.S3_BUCKET_NAME
 
     try:
-        response = s3.list_objects_v2(Bucket=bucket_name, Prefix='uploads/')
-        if 'Contents' not in response or not response['Contents']:
+        # response = s3.list_objects_v2(Bucket=bucket_name, Prefix='uploads/')
+        # if 'Contents' not in response or not response['Contents']:
+        #     return None
+        # objects = response['Contents']
+
+        upload_key = crud.get_upload_s3_key(db, upload_id)
+        if not upload_key:
             return None
-        objects = response['Contents']
-        latest_obj = max(objects, key=lambda x: x['LastModified'])
-        key = latest_obj['Key']
-        obj = s3.get_object(Bucket=bucket_name, Key=key)
+        
+        obj = s3.get_object(Bucket=bucket_name, Key=upload_key)
         # obj['Body'] is a StreamingBody; pass directly to pandas
         df = pd.read_csv(obj['Body'])
         # ensure date columns parsed lazily later in preprocess
@@ -67,14 +73,8 @@ def preprocess_and_feature_engineer(df: pd.DataFrame):
     """
     Accepts raw df and returns:
       df_processed, LABEL_ENCODERS, FEATURES, target (string)
-    Mutates global LABEL_ENCODERS and FEATURES.
     """
-    global LABEL_ENCODERS, FEATURES, TARGET
-
     df = df.copy()
-
-    # holiday indicator (existing column or later filled)
-    df['holiday'] = df.get('holiday', pd.NA).apply(lambda x: 0 if pd.isna(x) else 1)
 
     # date columns
     df = _safe_to_datetime(df, 'date')
@@ -83,33 +83,49 @@ def preprocess_and_feature_engineer(df: pd.DataFrame):
     # sort
     df = df.sort_values(by=['product_category', 'product', 'city', 'date']).reset_index(drop=True)
 
+     # --- Optional holiday column handling ---
+    has_holiday_col = 'holiday' in df.columns
+
+    # If 'holiday' exists, clean it up (convert to 1/0)
+    if has_holiday_col:
+        df['holiday'] = df['holiday'].apply(lambda x: 0 if pd.isna(x) else 1).astype(int)
+
+
     # date features
     df['year'] = df['date'].dt.year
     df['month'] = df['date'].dt.month
+    df['season'] = df['month'].apply(get_season)
     df['day'] = df['date'].dt.day
     df['dayofweek'] = df['date'].dt.dayofweek
     df['weekofyear'] = df['date'].dt.isocalendar().week
     df['quarter'] = df['date'].dt.quarter
     df['is_weekend'] = df['dayofweek'].isin([5, 6]).astype(int)
 
-    # holidays: try python-holidays
+    # --- Create is_holiday flag ---
     try:
         import holidays as _hol
         years = range(int(df['date'].dt.year.min()), int(df['date'].dt.year.max()) + 1)
         ind_holidays = _hol.India(years=years)
         df['is_holiday'] = df['date'].apply(lambda x: 1 if x in ind_holidays else 0)
+
+        # if original holiday column exists, merge it (OR condition)
+        if has_holiday_col:
+            df['is_holiday'] = df[['is_holiday', 'holiday']].max(axis=1)
+
     except Exception:
-        df['is_holiday'] = df['holiday'].fillna(0).astype(int)
+        # fallback: use holiday column if exists, else all zeros
+        df['is_holiday'] = df['holiday'] if has_holiday_col else 0
+    
 
     # label encode categoricals
-    LABEL_ENCODERS = {}
+    label_encoders = {}
     for col in CATEGORICAL_COLS:
         le = LabelEncoder()
         # convert to str and fill missing
         df[col] = df.get(col, "").astype(str).fillna("NA")
         le.fit(df[col])
         df[col] = le.transform(df[col])
-        LABEL_ENCODERS[col] = le
+        label_encoders[col] = le
 
     # product age
     df['product_age_days'] = (df['date'] - df['release_date']).dt.days.fillna(0).astype(int)
@@ -122,11 +138,14 @@ def preprocess_and_feature_engineer(df: pd.DataFrame):
         df[f'quantity_sold_roll_mean_{window}'] = df.groupby('product')['quantity_sold'].transform(lambda x: x.rolling(window=window, min_periods=1).mean())
         df[f'quantity_sold_roll_std_{window}'] = df.groupby('product')['quantity_sold'].transform(lambda x: x.rolling(window=window, min_periods=1).std(ddof=0))
 
+    # Drop rows with no date
+    # df.dropna(subset=['date'], inplace=True)
+    # print(df[df['date'].isna()])
     # Fill NaNs
     df.fillna(0, inplace=True)
 
-    # FEATURES list
-    FEATURES = ['product_category', 'product', 'city', 'year', 'month', 'day', 'dayofweek', 'weekofyear',
+    # features list
+    features = ['product_category', 'product', 'city', 'year', 'month', 'day', 'dayofweek', 'weekofyear',
                 'quarter', 'is_weekend',
                 'is_holiday', 'price', 'discount', 'final_price', 'competitor_price',
                 'marketing_spend', 'last_month_sales', 'product_age_days',
@@ -135,12 +154,12 @@ def preprocess_and_feature_engineer(df: pd.DataFrame):
                 'quantity_sold_roll_mean_30', 'quantity_sold_roll_std_30']
 
     # ensure features exist
-    for f in FEATURES:
+    for f in features:
         if f not in df.columns:
             df[f] = 0
 
-    TARGET = 'quantity_sold'
-    return df, LABEL_ENCODERS, FEATURES, TARGET
+    target = 'quantity_sold'
+    return df, label_encoders, features, target
 
 # ---------------------------
 # Training & model selection
@@ -152,6 +171,7 @@ def train_models_and_select(df: pd.DataFrame, features: List[str], target: str):
     # prepare train/test by time split
     df = df.copy().sort_values('date').reset_index(drop=True)
     split_date = df['date'].quantile(0.8)
+    # split_date = pd.to_datetime(split_date)
     train_df = df[df['date'] < split_date]
     test_df = df[df['date'] >= split_date]
 
@@ -242,26 +262,25 @@ def get_discount(season, holiday):
 # ---------------------------
 def generate_future_features(product_category: str, product: str, city: str, num_days: int = 30,
                              base_df: pd.DataFrame = None, price: Optional[float] = None,
-                             discount: Optional[float] = None, seed: Optional[int] = None):
+                             discount: Optional[float] = None, seed: Optional[int] = None,
+                             label_encoders: Dict[str, LabelEncoder] = None, features: List[str] = None):
     """
     Build deterministic future features using LABEL_ENCODERS and base_df.
     Returns (future_df, prod_df, FEATURES)
     """
-    global LABEL_ENCODERS, FEATURES
-
     if base_df is None:
         raise ValueError("base_df required")
 
     # ensure label encoders present
-    if not LABEL_ENCODERS:
+    if not label_encoders:
         # attempt to precompute encoders from base_df
-        _, LABEL_ENCODERS, FEATURES, _ = preprocess_and_feature_engineer(base_df)
+        _, label_encoders, features, _ = preprocess_and_feature_engineer(base_df)
 
     # encode inputs (raise HTTP 400 if unseen)
     try:
-        enc_category = LABEL_ENCODERS['product_category'].transform([str(product_category)])[0]
-        enc_product = LABEL_ENCODERS['product'].transform([str(product)])[0]
-        enc_city = LABEL_ENCODERS['city'].transform([str(city)])[0]
+        enc_category = label_encoders['product_category'].transform([str(product_category)])[0]
+        enc_product = label_encoders['product'].transform([str(product)])[0]
+        enc_city = label_encoders['city'].transform([str(city)])[0]
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Encoding error: {e}")
 
@@ -335,10 +354,10 @@ def generate_future_features(product_category: str, product: str, city: str, num
 
     future_df = pd.DataFrame(rows)
     # ensure FEATURES variable is present and does not include the target
-    if not FEATURES:
-        _, LABEL_ENCODERS, FEATURES, _ = preprocess_and_feature_engineer(base_df)
+    if not features:
+        _, _, features, _ = preprocess_and_feature_engineer(base_df)
     # return features list as-is (without target)
-    return future_df, prod_df, FEATURES
+    return future_df, prod_df, features
 
 def sequential_predict(model, model_type: str, future_df: pd.DataFrame, historical_df: pd.DataFrame, features: List[str]):
     """
@@ -401,3 +420,24 @@ def sequential_predict(model, model_type: str, future_df: pd.DataFrame, historic
     future_df = future_df.copy()
     future_df['predicted_quantity_sold'] = [int(round(p)) for p in preds]
     return future_df
+
+
+def extract_and_store_features(df: pd.DataFrame, user_id: int, db: Session):
+    try:
+        column_names = df.columns.tolist()
+        product = df["product"].unique().tolist()
+        category = df["product_category"].unique().tolist()
+        city = df["city"].unique().tolist()
+
+        feature_entry = DistinctFeature(
+            user_id=user_id,
+            column_names=column_names,
+            product=product,
+            category=category,
+            city=city,
+        )
+        db.add(feature_entry)
+        db.commit()
+
+    except Exception as e:
+        print(f"Error processing file for feature extraction: {e}")

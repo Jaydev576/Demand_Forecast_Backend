@@ -1,10 +1,12 @@
-# router.py  (modified: uploads to S3 on train complete, download from S3 for predict)
-import json
 import os
+import boto3
+import json
 import tempfile
 from typing import Optional
 from urllib.parse import urlparse
+from datetime import datetime
 
+from fastapi.params import Depends
 import joblib
 import pandas as pd
 
@@ -12,33 +14,24 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 import plotly.express as px
 import plotly.graph_objects as go
-from fastapi import APIRouter
+from fastapi import APIRouter, BackgroundTasks
 
-from schemas import PredictRequest, TrainResponse
-from utils import generate_future_features, get_csv_data, preprocess_and_feature_engineer, sequential_predict, train_models_and_select
-
-import boto3
-from datetime import datetime
+from sqlalchemy.orm import Session
+from auth import get_current_user
+from models import User
+from schemas import PredictRequest
+from routes.insights import generate_business_insight_background
+from utils import generate_future_features, get_csv_data, preprocess_and_feature_engineer, sequential_predict, train_models_and_select, extract_and_store_features
 
 # DB imports - adjust module path if different
-from db import SessionLocal
+from db import get_db, SessionLocal
 import crud
 from settings import settings
 
 router = APIRouter()
 
-# ------------------------------
-# Globals (kept in memory + persisted)
-# ------------------------------
-DATA_DF: Optional[pd.DataFrame] = None
-LABEL_ENCODERS = {}
-FEATURES = []
-TARGET = "quantity_sold"
 MODELS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'models'))
 os.makedirs(MODELS_DIR, exist_ok=True)
-MODEL_TYPE = 'xgb' # 'xgb' or 'lgb'
-BEST_MODEL = None
-BEST_MODEL_META = None
 
 # S3 client (uses credentials from settings / env)
 _s3_client = boto3.client(
@@ -94,18 +87,15 @@ def download_s3_to_tempfile(s3_uri: str):
         raise
     return tmp.name
 
-# Helper to get latest CSV name from S3 uploads folder
-def get_latest_csv_key():
+# Helper to get CSV name from S3 uploads folder
+def get_latest_csv_key(db: Session, user_id: int) -> Optional[str]:
     try:
-        bucket_name = getattr(settings, "S3_BUCKET_NAME", None)
-        s3 = _s3_client
-        response = s3.list_objects_v2(Bucket=bucket_name, Prefix='uploads/')
-        if 'Contents' not in response or not response['Contents']:
-            return None
-        latest_obj = max(response['Contents'], key=lambda x: x['LastModified'])
-        return latest_obj['Key']
+        uploads = crud.list_uploads_for_user(db, user_id=user_id, limit=1)
+        if uploads:
+            return uploads[0].key
+        return None
     except Exception as e:
-        print(f"Error getting latest CSV from S3: {e}")
+        print(f"Error getting latest CSV from S3 for user {user_id}: {e}")
         return None
 
 # Helper: convert datetime strings if needed
@@ -121,56 +111,63 @@ def _to_datetime_safe(s: str):
 # ------------------------------
 # API Endpoints
 # ------------------------------
-@router.post("/start-training", response_model=TrainResponse, summary="Train models on uploaded CSV")
-def train_pipeline():
+def train_pipeline(upload_id: int, db: Session, background_tasks: BackgroundTasks):
     """
     Runs full preprocessing, feature engineering and trains XGB and LGB, selects best model.
     Persists a TrainingRun record (processing -> completed/failed).
     Uploads model & meta to S3 and saves S3 URIs in DB.
     Returns metrics and sample plot serialized as Plotly JSON.
     """
-    global DATA_DF, LABEL_ENCODERS, FEATURES, BEST_MODEL, MODEL_TYPE, BEST_MODEL_META
-    DATA_DF = get_csv_data()
-    db = SessionLocal()
+    print(upload_id)
+    
+    db_session = db
+    if db_session is None:
+        db_session = SessionLocal()
+
+    try:
+        data_df = get_csv_data(upload_id, db_session)
+        background_tasks.add_task(generate_business_insight_background, upload_id, db_session)
+        #
+        print("CSV data loaded from s3...", data_df.shape if data_df is not None else "None")
+    except Exception as e:
+        print(f"Error loading CSV from S3: {e}")
+        data_df = None
+
     training_run = None
     try:
-        print('starting training pipeline...')
-        if DATA_DF is None:
-            raise HTTPException(status_code=400, detail="No dataset uploaded. Use /upload-csv first.")
+        print('Starting training pipeline...')
+        if data_df is None:
+            raise HTTPException(status_code=400, detail="No dataset uploaded!")
 
         # Create a training_run record (status = processing)
-        upload_id = None
-        try:
-            csv_key = get_latest_csv_key()
-            if csv_key:
-                upload_rec = crud.get_upload_by_key(db, key=csv_key)
-                if upload_rec:
-                    upload_id = upload_rec.id
-        except Exception:
-            upload_id = None
+        user_id = crud.get_userid_by_upload(db_session, upload_id)
+        if not user_id:
+            raise Exception(f"User not found for upload_id {upload_id}")
 
-        training_run = crud.create_training_run(db, upload_id=upload_id, user_id=None, status="processing")
+        extract_and_store_features(data_df, user_id, db_session)
+
+        training_run = crud.create_training_run(db_session, upload_id=upload_id, user_id=user_id, status="processing")
 
         # Preprocess and train
-        df_proc, LABEL_ENCODERS, FEATURES, TARGET = preprocess_and_feature_engineer(DATA_DF)
-        best_model, model_type, metrics = train_models_and_select(df_proc, FEATURES, TARGET)
+        df_proc, label_encoders, features, target = preprocess_and_feature_engineer(data_df)
+        best_model, model_type, metrics = train_models_and_select(df_proc, features, target)
         print(f"Best model: {model_type} with metrics: {metrics}")
 
         # Name model files from the csv (or timestamp fallback)
-        csv_key = get_latest_csv_key()
+        csv_key = crud.get_upload_s3_key(db_session, upload_id)
         if csv_key is None:
             csv_filename = f"local_upload_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.csv"
         else:
             csv_filename = os.path.basename(csv_key)
 
         model_filename = f"{os.path.splitext(csv_filename)[0]}_model.pkl"
-        meta_filename = f"{os.path.splitext(csv_filename)[0]}_meta.pkl"
+        meta_filename = f"{os.path.splitext(csv_filename)[0]}_meta.joblib"
         local_model_path = os.path.join(MODELS_DIR, model_filename)
         local_meta_path = os.path.join(MODELS_DIR, meta_filename)
 
         # Save local copies
         joblib.dump(best_model, local_model_path)
-        joblib.dump({"model_type": model_type, "features": FEATURES, "label_encoders": LABEL_ENCODERS}, local_meta_path)
+        joblib.dump({"model_type": model_type, "features": features, "label_encoders": label_encoders}, local_meta_path)
 
         # Upload model and meta to S3 under models/
         s3_model_key = f"models/{model_filename}"
@@ -185,23 +182,19 @@ def train_pipeline():
             s3_upload_error = str(e)
             print(f"Error uploading model/meta to S3: {e}")
 
-        BEST_MODEL = best_model
-        MODEL_TYPE = model_type
-        BEST_MODEL_META = {"model_type": model_type, "features": FEATURES, "label_encoders": LABEL_ENCODERS}
-
         # create a sample plot: last N actual vs predicted using test set
         df_proc = df_proc.sort_values('date').reset_index(drop=True)
         split_date = df_proc['date'].quantile(0.8)
         test_df = df_proc[df_proc['date'] >= split_date]
-        X_test = test_df[FEATURES].drop(columns=['date'], errors='ignore')
-        y_test = test_df[TARGET]
+        X_test = test_df[features].drop(columns=['date'], errors='ignore')
+        y_test = test_df[target]
         preds = best_model.predict(X_test)
 
         fig = go.Figure()
         # plot actual mean per day (aggregate to reduce clutter)
-        agg_actual = test_df.groupby('date')[TARGET].sum().reset_index()
+        agg_actual = test_df.groupby('date')[target].sum().reset_index()
         agg_pred = pd.DataFrame({'date': test_df['date'], 'pred': preds}).groupby('date')['pred'].sum().reset_index()
-        fig.add_trace(go.Scatter(x=agg_actual['date'], y=agg_actual[TARGET], name='actual (sum/day)'))
+        fig.add_trace(go.Scatter(x=agg_actual['date'], y=agg_actual[target], name='actual (sum/day)'))
         fig.add_trace(go.Scatter(x=agg_pred['date'], y=agg_pred['pred'], name='predicted (sum/day)'))
         fig.update_layout(title="Test Actual vs Predicted (daily aggregated)")
         fig_json = fig.to_json()
@@ -209,7 +202,7 @@ def train_pipeline():
 
         # Update training_run as completed with metrics and S3/local paths
         crud.update_training_run(
-            db,
+            db_session,
             training_run.id,
             status="completed",
             metrics=metrics,
@@ -224,88 +217,84 @@ def train_pipeline():
     except Exception as e:
         # mark training as failed
         err_msg = str(e)
-        print("Training pipeline error:", err_msg)
+        print("Training pipeline error: ", err_msg)
         if training_run is not None:
             try:
-                crud.fail_training_run(db, training_run.id, error_message=err_msg)
+                crud.fail_training_run(db_session, training_run.id, error_message=err_msg)
             except Exception as ee:
-                print("Failed to update training_run status:", ee)
+                print("Failed to update training_run status: ", ee)
         raise HTTPException(status_code=500, detail=f"Training failed: {err_msg}")
     finally:
-        db.close()
+        if db is None and db_session is not None:
+            db_session.close()
 
 
 @router.post("/predict", summary="Predict future quantity for a product")
-def predict(req: PredictRequest):
+def predict(req: PredictRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """
     Predict future num_days for the given product (product_category, product, city).
     If the model is not loaded in memory, download the latest completed model & meta from S3 (using the latest TrainingRun)
     and load them. Persistes forecast in DB via save_forecast.
     Returns a JSON with predictions and a Plotly figure JSON (history + future).
     """
-    global DATA_DF, BEST_MODEL, MODEL_TYPE, LABEL_ENCODERS, FEATURES, BEST_MODEL_META
-
-    db = SessionLocal()
     try:
         # If model not loaded in memory, try to load from the latest completed training run (S3/local)
-        if BEST_MODEL is None:
-            runs = crud.list_training_runs(db, status="completed", limit=1, offset=0)
-            if not runs:
-                raise HTTPException(status_code=400, detail="No completed training run found. Call /start-training first.")
-            latest = runs[0]
-            model_path_uri = latest.model_path
-            meta_path_uri = latest.model_meta_path
+        runs = crud.list_training_runs(db, user_id=user.id, status="completed", limit=1, offset=0)
+        if not runs:
+            raise HTTPException(status_code=400, detail="No completed training run found. Call /start-training first.")
+        latest = runs[0]
+        model_path_uri = latest.model_path
+        meta_path_uri = latest.model_meta_path
 
-            # If paths are S3 URIs, download to tempfile; otherwise assume local file path
-            loaded_model = None
-            loaded_meta = None
-            try:
-                if model_path_uri and str(model_path_uri).startswith("s3://"):
-                    tmp_model_path = download_s3_to_tempfile(model_path_uri)
-                    loaded_model = joblib.load(tmp_model_path)
-                    os.unlink(tmp_model_path)
-                else:
-                    loaded_model = joblib.load(model_path_uri)
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=f"Failed to load model from {model_path_uri}: {e}")
-
-            try:
-                if meta_path_uri and str(meta_path_uri).startswith("s3://"):
-                    tmp_meta_path = download_s3_to_tempfile(meta_path_uri)
-                    loaded_meta = joblib.load(tmp_meta_path)
-                    os.unlink(tmp_meta_path)
-                else:
-                    loaded_meta = joblib.load(meta_path_uri)
-            except Exception as e:
-                # Meta is not strictly required but helpful; warn rather than fail
-                print(f"Warning: failed to load meta from {meta_path_uri}: {e}")
-                loaded_meta = {}
-
-            BEST_MODEL = loaded_model
-            if isinstance(loaded_meta, dict):
-                BEST_MODEL_META = loaded_meta
-                MODEL_TYPE = loaded_meta.get("model_type", MODEL_TYPE)
-                FEATURES = loaded_meta.get("features", FEATURES)
-                LABEL_ENCODERS = loaded_meta.get("label_encoders", LABEL_ENCODERS)
+        # If paths are S3 URIs, download to tempfile; otherwise assume local file path
+        loaded_model = None
+        loaded_meta = None
+        try:
+            if model_path_uri and str(model_path_uri).startswith("s3://"):
+                tmp_model_path = download_s3_to_tempfile(model_path_uri)
+                loaded_model = joblib.load(tmp_model_path)
+                os.unlink(tmp_model_path)
             else:
-                # fallback: leave MODEL_TYPE and others unchanged
-                BEST_MODEL_META = {}
+                loaded_model = joblib.load(model_path_uri)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to load model from {model_path_uri}: {e}")
 
-        if DATA_DF is None:
-            raise HTTPException(status_code=400, detail="No dataset uploaded. Use /upload-csv first.")
+        try:
+            if meta_path_uri and str(meta_path_uri).startswith("s3://"):
+                tmp_meta_path = download_s3_to_tempfile(meta_path_uri)
+                loaded_meta = joblib.load(tmp_meta_path)
+                os.unlink(tmp_meta_path)
+            else:
+                loaded_meta = joblib.load(meta_path_uri)
+        except Exception as e:
+            # Meta is not strictly required but helpful; warn rather than fail
+            print(f"Warning: failed to load meta from {meta_path_uri}: {e}")
+            loaded_meta = {}
+
+        model_type = loaded_meta.get("model_type", "xgb")
+        features = loaded_meta.get("features", [])
+        label_encoders = loaded_meta.get("label_encoders", {})
+
+        upload_id = crud.list_uploads_for_user(db, user_id=user.id, limit=1)[0].id
+        print(upload_id)
+        data_df = get_csv_data(upload_id, db)
+        if data_df is None:
+            raise HTTPException(status_code=400, detail="No dataset uploaded. Please upload CSV first.")
 
         # prepare base processed df & encoders/features if needed
-        base_df, LABEL_ENCODERS, FEATURES, target = preprocess_and_feature_engineer(DATA_DF)
+        base_df, label_encoders, features, target = preprocess_and_feature_engineer(data_df)
 
         # prepare future features
-        future_df, hist_df, FEATURES = generate_future_features(
+        future_df, hist_df, features = generate_future_features(
             req.product_category, req.product, req.city, num_days=req.num_days,
             base_df=base_df,
-            price=req.price, discount=req.discount
+            price=req.price, discount=req.discount,
+            label_encoders=label_encoders,
+            features=features
         )
 
         # sequential predict
-        future_preds = sequential_predict(BEST_MODEL, MODEL_TYPE, future_df, hist_df, FEATURES)
+        future_preds = sequential_predict(loaded_model, model_type, future_df, hist_df, features)
 
         # build a plotly graph: history (last 90 days) + future
         hist_plot = hist_df.sort_values('date').tail(90).copy()
@@ -318,12 +307,12 @@ def predict(req: PredictRequest):
         # feature importance (if available)
         fi_json = None
         try:
-            if MODEL_TYPE == 'xgb':
-                importance = BEST_MODEL.get_booster().get_score(importance_type='weight')
+            if model_type == 'xgb':
+                importance = loaded_model.get_booster().get_score(importance_type='weight')
                 fi = pd.DataFrame(list(importance.items()), columns=['feature', 'importance']).sort_values('importance', ascending=False)
             else:
-                if hasattr(BEST_MODEL, 'feature_importances_'):
-                    fi = pd.DataFrame({'feature': FEATURES, 'importance': BEST_MODEL.feature_importances_}).sort_values('importance', ascending=False)
+                if hasattr(loaded_model, 'feature_importances_'):
+                    fi = pd.DataFrame({'feature': features, 'importance': loaded_model.feature_importances_}).sort_values('importance', ascending=False)
             if fi is not None and not fi.empty:
                 fig2 = px.bar(fi.head(20), x='feature', y='importance', title='Top 20 Feature Importances')
                 fi_json = fig2.to_json()
@@ -339,7 +328,7 @@ def predict(req: PredictRequest):
             # try to find upload record from S3 latest CSV key
             upload_id = None
             try:
-                csv_key = get_latest_csv_key()
+                csv_key = get_latest_csv_key(db, user.id)
                 if csv_key:
                     upload_record = crud.get_upload_by_key(db, key=csv_key)
                     if upload_record:
@@ -354,7 +343,7 @@ def predict(req: PredictRequest):
             rec = crud.save_forecast(
                 db,
                 upload_id=upload_id,
-                user_id=None,
+                user_id=user.id,
                 product_category=req.product_category,
                 product=req.product,
                 city=req.city,
@@ -369,7 +358,7 @@ def predict(req: PredictRequest):
             forecast_id = rec.id
         except Exception as e:
             # log but do not fail prediction result delivery
-            print("Failed to persist forecast:", e)
+            print("Failed to persist forecast: ", e)
             forecast_id = None
 
         return JSONResponse({
@@ -381,11 +370,5 @@ def predict(req: PredictRequest):
             "feature_importance_json": fi_json,
             "forecast_id": forecast_id
         })
-    finally:
-        db.close()
-
-
-@router.get("/model/status")
-def model_status():
-    global BEST_MODEL, MODEL_TYPE
-    return {"model_loaded": BEST_MODEL is not None, "model_type": MODEL_TYPE}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")

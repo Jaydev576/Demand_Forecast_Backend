@@ -78,3 +78,23 @@ class TrainingRun(Base):
     __table_args__ = (
         Index('ix_trainingruns_upload_status', 'upload_id', 'status'),
     )
+
+
+class DistinctFeature(Base):
+    __tablename__ = "distinct_features"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    column_names = Column(JSONB, nullable=False)
+    product = Column(JSONB, nullable=False)
+    category = Column(JSONB, nullable=False)
+    city = Column(JSONB, nullable=False)
+
+class BusinessInsight(Base):
+    __tablename__ = "business_insights"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    kpis = Column(JSONB, nullable=True)
+    charts = Column(JSONB, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

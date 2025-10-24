@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
-from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from fastapi_mail import ConnectionConfig, FastMail, MessageSchema, MessageType
 
@@ -25,7 +24,7 @@ conf = ConnectionConfig(
 
 async def send_verification_email(email: str, username: str, token: str):
     print("Sending verification email...")
-    verification_link = f"http://localhost:8000/user/verify-email?token={token}"
+    verification_link = f"http://localhost:8000/auth/verify-email?token={token}"
     try:
         with open("verification_email.html") as f:
             template = f.read()

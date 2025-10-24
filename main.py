@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from db import engine
 import models
 from fastapi.middleware.cors import CORSMiddleware
-from routes import users, uploads, train
+from routes import auth, upload, user, train, feature, insights
 
 # models.Base.metadata.drop_all(bind=engine) # to drop all tables in db
 models.Base.metadata.create_all(bind=engine)
@@ -26,9 +26,12 @@ app.add_middleware(
     allow_headers=["*"],            # Allow all headers
 )
 
-app.include_router(users.router, prefix="/auth")
-app.include_router(uploads.router, prefix="/upload")
+app.include_router(auth.router, prefix="/auth")
+app.include_router(upload.router, prefix="/upload")
 app.include_router(train.router, prefix="/train")
+app.include_router(user.router, prefix="/user")
+app.include_router(feature.router, prefix="/feature")
+app.include_router(insights.router, prefix="/insights")
 
 
 @app.get("/api")

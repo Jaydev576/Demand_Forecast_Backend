@@ -1,6 +1,7 @@
 # schemas.py
 from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field
+from datetime import datetime
 
 
 # -----------------------
@@ -99,3 +100,18 @@ class PredictResponse(BaseModel):
 
     class Config:
         orm_mode = True
+
+class BusinessInsight(BaseModel):
+    id: int
+    user_id: int
+    kpis: Dict[str, Any]
+    charts: Dict[str, Any]
+    # created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+class BusinessInsightCreate(BaseModel):
+    user_id: int
+    kpis: Dict[str, Any]
+    charts: Dict[str, Any]

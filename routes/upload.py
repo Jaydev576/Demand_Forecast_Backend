@@ -1,10 +1,11 @@
-# uploads_router.py
 import uuid
 import boto3
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 from botocore.exceptions import ClientError
+from auth import get_current_active_user
 from db import get_db
+from routes.train import train_pipeline
 from settings import settings
 from models import Upload, User
 from schemas import UploadCompleteRequest
@@ -32,9 +33,9 @@ def make_s3_key(filename: str) -> str:
     return f"uploads/{uuid.uuid4().hex}.{ext}"
 
 # Optional auth dependency; replace with your project's current_user dependency if available
-def get_current_user_optional():
-    # stub: replace with actual auth dependency or remove from route signature
-    return None
+# def get_current_user_optional():
+#     # stub: replace with actual auth dependency or remove from route signature
+#     return None
 
 # @router.post("/csv-for-training", status_code=status.HTTP_201_CREATED)
 # async def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db), current_user: Optional[User] = Depends(get_current_user_optional)):
@@ -113,7 +114,7 @@ def generate_presigned_upload_url(
     filename: str = Query(...),
     content_type: str = Query("text/csv"),
     db: Session = Depends(get_db),
-    current_user: Optional[User] = Depends(get_current_user_optional),
+    current_user: Optional[User] = Depends(get_current_active_user),
 ):
     """
     Generates a presigned PUT URL that the client can use to upload a file directly to S3.
@@ -161,7 +162,12 @@ def generate_presigned_upload_url(
 
 
 @router.post("/upload-complete")
-def confirm_upload(request: UploadCompleteRequest, db: Session = Depends(get_db)):
+def confirm_upload(
+    request: UploadCompleteRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
     """
     Called by client after uploading with presigned URL.
     Updates DB record with size and metadata from S3.
@@ -178,11 +184,15 @@ def confirm_upload(request: UploadCompleteRequest, db: Session = Depends(get_db)
         db.add(upload)
         db.commit()
         db.refresh(upload)
+
+        # start training in background
+        background_tasks.add_task(train_pipeline, upload.id, db)
+        # print("upload: ", upload.id)
+        return {"status": "ok", "upload_id": upload.id, "size_bytes": upload.size_bytes}
+
     except ClientError as e:
         # do not overwrite DB if head fails; surface error
         raise HTTPException(status_code=500, detail=f"S3 head_object failed: {e}")
-
-    return {"status": "ok", "upload_id": upload.id, "size_bytes": upload.size_bytes}
 
 
 @router.get("/download/{upload_id}")
