@@ -45,8 +45,8 @@ class Forecast(Base):
     num_days = Column(Integer, nullable=False)
     params = Column(JSONB, nullable=True)
     predictions = Column(JSONB, nullable=False)          # list of dicts
-    figure_json = Column(Text, nullable=True)            # plotly figure JSON string
-    feature_importance_json = Column(Text, nullable=True)
+    # figure_json = Column(Text, nullable=True)            # plotly figure JSON string
+    # feature_importance_json = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
