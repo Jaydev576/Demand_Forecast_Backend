@@ -318,28 +318,28 @@ def predict(req: PredictRequest, user: User = Depends(get_current_user), db: Ses
         # sequential predict
         future_preds = sequential_predict(loaded_model, model_type, future_df, hist_df, features)
 
-        # build a plotly graph: history (last 90 days) + future
-        hist_plot = hist_df.sort_values('date').tail(90).copy()
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=hist_plot['date'], y=hist_plot['quantity_sold'], name='historical_quantity_sold'))
-        fig.add_trace(go.Scatter(x=future_preds['date'], y=future_preds['predicted_quantity_sold'], name='predicted_future'))
-        fig.update_layout(title=f"History & {req.num_days}-day Forecast for {req.product} in {req.city}")
-        figure_json = fig.to_json()
+        # # build a plotly graph: history (last 90 days) + future
+        # hist_plot = hist_df.sort_values('date').tail(90).copy()
+        # fig = go.Figure()
+        # fig.add_trace(go.Scatter(x=hist_plot['date'], y=hist_plot['quantity_sold'], name='historical_quantity_sold'))
+        # fig.add_trace(go.Scatter(x=future_preds['date'], y=future_preds['predicted_quantity_sold'], name='predicted_future'))
+        # fig.update_layout(title=f"History & {req.num_days}-day Forecast for {req.product} in {req.city}")
+        # figure_json = fig.to_json()
 
-        # feature importance (if available)
-        fi_json = None
-        try:
-            if model_type == 'xgb':
-                importance = loaded_model.get_booster().get_score(importance_type='weight')
-                fi = pd.DataFrame(list(importance.items()), columns=['feature', 'importance']).sort_values('importance', ascending=False)
-            else:
-                if hasattr(loaded_model, 'feature_importances_'):
-                    fi = pd.DataFrame({'feature': features, 'importance': loaded_model.feature_importances_}).sort_values('importance', ascending=False)
-            if fi is not None and not fi.empty:
-                fig2 = px.bar(fi.head(20), x='feature', y='importance', title='Top 20 Feature Importances')
-                fi_json = fig2.to_json()
-        except Exception:
-            fi_json = None
+        # # feature importance (if available)
+        # fi_json = None
+        # try:
+        #     if model_type == 'xgb':
+        #         importance = loaded_model.get_booster().get_score(importance_type='weight')
+        #         fi = pd.DataFrame(list(importance.items()), columns=['feature', 'importance']).sort_values('importance', ascending=False)
+        #     else:
+        #         if hasattr(loaded_model, 'feature_importances_'):
+        #             fi = pd.DataFrame({'feature': features, 'importance': loaded_model.feature_importances_}).sort_values('importance', ascending=False)
+        #     if fi is not None and not fi.empty:
+        #         fig2 = px.bar(fi.head(20), x='feature', y='importance', title='Top 20 Feature Importances')
+        #         fi_json = fig2.to_json()
+        # except Exception:
+        #     fi_json = None
 
         # prepare predictions payload
         future_preds['date'] = future_preds['date'].astype(str)
@@ -374,8 +374,8 @@ def predict(req: PredictRequest, user: User = Depends(get_current_user), db: Ses
                 num_days=req.num_days,
                 predictions=preds_table,
                 params={"price": req.price, "discount": req.discount},
-                figure_json=figure_json,
-                feature_importance_json=fi_json
+                # figure_json=figure_json,
+                # feature_importance_json=fi_json
             )
             forecast_id = rec.id
         except Exception as e:
@@ -388,9 +388,21 @@ def predict(req: PredictRequest, user: User = Depends(get_current_user), db: Ses
             "city": req.city,
             "num_days": req.num_days,
             "predictions": preds_table,
-            "figure_json": figure_json,
-            "feature_importance_json": fi_json,
+            # "figure_json": figure_json,
+            # "feature_importance_json": fi_json,
             "forecast_id": forecast_id
         })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
+    
+
+@router.get("/get_forecasts", summary="Get list of forecasts for the current user")
+def get_forecasts(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """
+    Returns a list of forecasts made by the current user.
+    """
+    try:
+        forecasts = crud.list_forecasts_for_user(db, user_id=user.id)
+        return JSONResponse({"forecasts": [f.to_dict() for f in forecasts]})
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
