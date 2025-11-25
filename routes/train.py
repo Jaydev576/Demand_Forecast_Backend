@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 import plotly.express as px
 import plotly.graph_objects as go
 from fastapi import APIRouter, BackgroundTasks
-
+from email_utils import send_training_completion_email
 from sqlalchemy.orm import Session
 from auth import get_current_user
 from models import User
@@ -101,6 +101,7 @@ def get_latest_csv_key(db: Session, user_id: int) -> Optional[str]:
 # Helper: convert datetime strings if needed
 def _to_datetime_safe(s: str):
     try:
+        
         return datetime.fromisoformat(s)
     except Exception:
         try:
@@ -108,9 +109,8 @@ def _to_datetime_safe(s: str):
         except Exception:
             return None
 
-# ------------------------------
-# API Endpoints
-# ------------------------------
+
+# Training pipeline
 def train_pipeline(upload_id: int, db: Session, background_tasks: BackgroundTasks):
     """
     Runs full preprocessing, feature engineering and trains XGB and LGB, selects best model.
@@ -118,7 +118,7 @@ def train_pipeline(upload_id: int, db: Session, background_tasks: BackgroundTask
     Uploads model & meta to S3 and saves S3 URIs in DB.
     Returns metrics and sample plot serialized as Plotly JSON.
     """
-    print(upload_id)
+    print("uploaded id : ", upload_id)
     
     db_session = db
     if db_session is None:
@@ -127,8 +127,7 @@ def train_pipeline(upload_id: int, db: Session, background_tasks: BackgroundTask
     try:
         data_df = get_csv_data(upload_id, db_session)
         background_tasks.add_task(generate_business_insight_background, upload_id, db_session)
-        #
-        print("CSV data loaded from s3...", data_df.shape if data_df is not None else "None")
+        # print("CSV data loaded from s3...", data_df.shape if data_df is not None else "None")
     except Exception as e:
         print(f"Error loading CSV from S3: {e}")
         data_df = None
@@ -143,7 +142,12 @@ def train_pipeline(upload_id: int, db: Session, background_tasks: BackgroundTask
         user_id = crud.get_userid_by_upload(db_session, upload_id)
         if not user_id:
             raise Exception(f"User not found for upload_id {upload_id}")
+        
+        user = crud.get_user(db_session, user_id)
+        if not user:
+            raise Exception(f"User not found for user_id {user_id}")
 
+        # Extract and store features
         extract_and_store_features(data_df, user_id, db_session)
 
         training_run = crud.create_training_run(db_session, upload_id=upload_id, user_id=user_id, status="processing")
@@ -211,6 +215,8 @@ def train_pipeline(upload_id: int, db: Session, background_tasks: BackgroundTask
             finished_at=datetime.utcnow(),
             rows_trained=int(df_proc.shape[0])
         )
+        
+        background_tasks.add_task(send_training_completion_email, [user.email], user.username)
 
         return {"message": "Training complete", "model_type": model_type, "metrics": metrics, "sample_fig_json": fig_dict, "training_run_id": training_run.id}
 
@@ -239,33 +245,49 @@ def predict(req: PredictRequest, user: User = Depends(get_current_user), db: Ses
     """
     try:
         # If model not loaded in memory, try to load from the latest completed training run (S3/local)
-        runs = crud.list_training_runs(db, user_id=user.id, status="completed", limit=1, offset=0)
+        runs = crud.list_training_runs(db, user_id=user.id, limit=1, offset=0)
         if not runs:
-            raise HTTPException(status_code=400, detail="No completed training run found. Call /start-training first.")
+            raise HTTPException(status_code=400, detail="CSV dataset not found. Please upload CSV and train model first.")
         latest = runs[0]
+        if latest.status == "processing":
+            raise HTTPException(status_code=400, detail="Model training is still in progress. Please try again later.")
         model_path_uri = latest.model_path
         meta_path_uri = latest.model_meta_path
 
         # If paths are S3 URIs, download to tempfile; otherwise assume local file path
         loaded_model = None
         loaded_meta = None
+
+        # Construct local paths
+        model_filename = os.path.basename(model_path_uri) if model_path_uri else ""
+        meta_filename = os.path.basename(meta_path_uri) if meta_path_uri else ""
+        local_model_path = os.path.join(MODELS_DIR, model_filename)
+        local_meta_path = os.path.join(MODELS_DIR, meta_filename)
+
         try:
-            if model_path_uri and str(model_path_uri).startswith("s3://"):
+            if os.path.exists(local_model_path):
+                loaded_model = joblib.load(local_model_path)
+            elif model_path_uri and str(model_path_uri).startswith("s3://"):
                 tmp_model_path = download_s3_to_tempfile(model_path_uri)
                 loaded_model = joblib.load(tmp_model_path)
                 os.unlink(tmp_model_path)
             else:
-                loaded_model = joblib.load(model_path_uri)
+                raise HTTPException(status_code=500, detail=f"Model not found locally or on S3: {model_path_uri}")
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to load model from {model_path_uri}: {e}")
 
         try:
-            if meta_path_uri and str(meta_path_uri).startswith("s3://"):
+            if os.path.exists(local_meta_path):
+                loaded_meta = joblib.load(local_meta_path)
+            elif meta_path_uri and str(meta_path_uri).startswith("s3://"):
                 tmp_meta_path = download_s3_to_tempfile(meta_path_uri)
                 loaded_meta = joblib.load(tmp_meta_path)
                 os.unlink(tmp_meta_path)
+                print("meta loaded successfully from S3.")
             else:
-                loaded_meta = joblib.load(meta_path_uri)
+                # Meta is not strictly required but helpful; warn rather than fail
+                print(f"Warning: meta not found locally or on S3: {meta_path_uri}")
+                loaded_meta = {}
         except Exception as e:
             # Meta is not strictly required but helpful; warn rather than fail
             print(f"Warning: failed to load meta from {meta_path_uri}: {e}")
@@ -276,11 +298,11 @@ def predict(req: PredictRequest, user: User = Depends(get_current_user), db: Ses
         label_encoders = loaded_meta.get("label_encoders", {})
 
         upload_id = crud.list_uploads_for_user(db, user_id=user.id, limit=1)[0].id
-        print(upload_id)
+        print("upload id:",upload_id)
         data_df = get_csv_data(upload_id, db)
         if data_df is None:
-            raise HTTPException(status_code=400, detail="No dataset uploaded. Please upload CSV first.")
-
+            raise HTTPException(status_code=500, detail="Failed to load dataset for prediction.")
+        print("dataframe loaded...")
         # prepare base processed df & encoders/features if needed
         base_df, label_encoders, features, target = preprocess_and_feature_engineer(data_df)
 
@@ -327,7 +349,7 @@ def predict(req: PredictRequest, user: User = Depends(get_current_user), db: Ses
         try:
             # try to find upload record from S3 latest CSV key
             upload_id = None
-            try:
+            try: 
                 csv_key = get_latest_csv_key(db, user.id)
                 if csv_key:
                     upload_record = crud.get_upload_by_key(db, key=csv_key)

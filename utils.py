@@ -1,4 +1,5 @@
 # utils.py
+import os
 from models import DistinctFeature
 from typing import List, Optional, Tuple, Dict
 import boto3
@@ -12,7 +13,6 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import xgboost as xgb
 import crud
-from db import get_db
 from settings import settings
 
 # allowed categorical columns we will encode
@@ -29,34 +29,48 @@ def _get_s3_client():
         aws_secret_access_key=getattr(settings, "AWS_SECRET_ACCESS_KEY", None),
     )
 
+# Cache directory
+CACHE_DIR = "cache"
+if not os.path.exists(CACHE_DIR):
+    os.makedirs(CACHE_DIR)
+
 def get_csv_data(upload_id: int, db: Session) -> Optional[pd.DataFrame]:
     """
     Loads the CSV data from S3 for given upload_id.
+    Caches the file locally to avoid re-downloading.
     Returns a DataFrame or None if not found.
     """
     if not upload_id:
         return None
-    
+
+    cache_path = os.path.join(CACHE_DIR, f"{upload_id}.csv")
+
+    # Check if the file is in the cache
+    if os.path.exists(cache_path):
+        try:
+            return pd.read_csv(cache_path)
+        except Exception as e:
+            print(f"Error reading from cache: {e}")
+            # If cache is corrupted, proceed to download from S3
+
     s3 = _get_s3_client()
     bucket_name = settings.S3_BUCKET_NAME
 
     try:
-        # response = s3.list_objects_v2(Bucket=bucket_name, Prefix='uploads/')
-        # if 'Contents' not in response or not response['Contents']:
-        #     return None
-        # objects = response['Contents']
-
         upload_key = crud.get_upload_s3_key(db, upload_id)
         if not upload_key:
             return None
         
-        obj = s3.get_object(Bucket=bucket_name, Key=upload_key)
-        # obj['Body'] is a StreamingBody; pass directly to pandas
-        df = pd.read_csv(obj['Body'])
-        # ensure date columns parsed lazily later in preprocess
-        return df
+        # Download the file and save it to the cache
+        s3.download_file(bucket_name, upload_key, cache_path)
+        
+        # Read from the newly cached file
+        return pd.read_csv(cache_path)
     except Exception as e:
         print(f"Error loading CSV from S3: {e}")
+        # Clean up the cache file if the download failed
+        if os.path.exists(cache_path):
+            os.remove(cache_path)
         return None
 
 # ---------------------------
@@ -425,15 +439,16 @@ def sequential_predict(model, model_type: str, future_df: pd.DataFrame, historic
 def extract_and_store_features(df: pd.DataFrame, user_id: int, db: Session):
     try:
         column_names = df.columns.tolist()
-        product = df["product"].unique().tolist()
-        category = df["product_category"].unique().tolist()
+        
+        # Create a dictionary of product to its category
+        product_category_map = df.groupby('product')['product_category'].first().to_dict()
+        
         city = df["city"].unique().tolist()
 
         feature_entry = DistinctFeature(
             user_id=user_id,
             column_names=column_names,
-            product=product,
-            category=category,
+            product=product_category_map,
             city=city,
         )
         db.add(feature_entry)

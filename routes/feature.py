@@ -9,7 +9,10 @@ router = APIRouter()
 
 @router.get("/features")
 def get_features(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
+    """
+    Extract distinct features (column names) from csv uploaded by user 
+    """
     features = crud.get_distinct_features(db, user_id=current_user.id)
     if not features:
-        return {"column_names": [], "product": [], "category": [], "city": []}
+        return {"column_names": [], "product": [], "city": []}
     return features

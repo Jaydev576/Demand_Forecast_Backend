@@ -1,60 +1,20 @@
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
-from fastapi_mail import ConnectionConfig, FastMail, MessageSchema, MessageType
+from email_utils import send_verification_email
 
 import auth
 import crud
 import schemas
 from db import get_db
-from settings import settings
 
 router = APIRouter()
-
-conf = ConnectionConfig(
-    MAIL_USERNAME=settings.MAIL_USERNAME,
-    MAIL_PASSWORD=settings.MAIL_PASSWORD,
-    MAIL_FROM=settings.MAIL_FROM,
-    MAIL_PORT=settings.MAIL_PORT,
-    MAIL_SERVER=settings.MAIL_SERVER,
-    MAIL_STARTTLS=settings.MAIL_STARTTLS,
-    MAIL_SSL_TLS=settings.MAIL_SSL_TLS,
-    USE_CREDENTIALS=True,
-    VALIDATE_CERTS=True
-)
-
-async def send_verification_email(email: str, username: str, token: str):
-    print("Sending verification email...")
-    verification_link = f"http://localhost:8000/auth/verify-email?token={token}"
-    try:
-        with open("verification_email.html") as f:
-            template = f.read()
-
-        html = template.format(username=username, verification_link=verification_link)
-        
-        message = MessageSchema(
-            subject="Email Verification",
-            recipients=[email],
-            body=html,
-            subtype=MessageType.html
-        )
-
-        fm = FastMail(conf)
-        await fm.send_message(message)
-        print("Verification email sent.")
-    except Exception as e: 
-        print(f"Error while sending email: {e}")
-        if(not isinstance(e, HTTPException)):
-            raise HTTPException(
-                status_code=500, 
-                detail="Internal Server Error"
-            )
-
 
 @router.post("/signup")
 async def create_user(user: schemas.UserCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     try:
         db_user = crud.get_user_by_email(db, email=user.email)
         if db_user and db_user.is_email_verified:
+
             raise HTTPException(
                 status_code=400,
                 detail="Email already registered! Please log in."
@@ -67,7 +27,8 @@ async def create_user(user: schemas.UserCreate, background_tasks: BackgroundTask
             )
         
         new_user = crud.create_user(db=db, user=user)
-        background_tasks.add_task(send_verification_email, new_user.email, new_user.username, new_user.email_verification_token)
+        verification_link = f"http://localhost:8000/auth/verify-email?token={new_user.email_verification_token}"
+        background_tasks.add_task(send_verification_email, [new_user.email], new_user.username, verification_link)
         
         return { "message": "Please check your email to verify your account." }
     except Exception as e:

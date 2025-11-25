@@ -87,7 +87,6 @@ class DistinctFeature(Base):
     user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
     column_names = Column(JSONB, nullable=False)
     product = Column(JSONB, nullable=False)
-    category = Column(JSONB, nullable=False)
     city = Column(JSONB, nullable=False)
 
 class BusinessInsight(Base):

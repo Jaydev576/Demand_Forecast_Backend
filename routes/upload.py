@@ -186,7 +186,7 @@ def confirm_upload(
         db.refresh(upload)
 
         # start training in background
-        background_tasks.add_task(train_pipeline, upload.id, db)
+        background_tasks.add_task(train_pipeline, upload.id, db, background_tasks)
         # print("upload: ", upload.id)
         return {"status": "ok", "upload_id": upload.id, "size_bytes": upload.size_bytes}
 
