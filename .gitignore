@@ -13,7 +13,6 @@ venv/
 
 # ===== Data & large model files =====
 data/
-models/
 cache/
 
 

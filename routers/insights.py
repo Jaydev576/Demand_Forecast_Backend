@@ -1,12 +1,12 @@
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-import crud
-from auth import get_current_active_user
-from db import get_db
-from models import User
-from utils import get_csv_data
-import schemas
+import services.crud as crud
+from utils.auth import get_current_active_user
+from db.db import get_db
+from models.models import User
+from utils.helpers import get_csv_data
+import schemas.schemas as schemas
 
 router = APIRouter()
 
@@ -64,26 +64,25 @@ def generate_business_insight_background(upload_id: int, db: Session):
         charts=convert_numpy_types(charts),
     )
     crud.create_business_insight(db, insight=new_insight)
-    print(f"Business insights generated for upload_id {upload_id}")
+    print(f"Business insights generated for upload_id {upload_id} in background.")
 
 
 @router.get("/")
 def get_business_insights(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
     insights = crud.get_latest_business_insight(db, user_id=current_user.id)
-    # print(insights.kpis)
-    if insights :
+    if insights:
         return insights
 
     # If no insights found, generate them
     # Get the latest upload for the user
     latest_upload = crud.list_uploads_for_user(db, user_id=current_user.id, limit=1)
     if not latest_upload:
-        raise HTTPException(status_code=404, detail="No data uploaded yet.")
+        raise HTTPException(status_code=404, detail="No data uploaded yet")
 
     # Get the data from the latest upload
     data_df = get_csv_data(latest_upload[0].id, db)
     if data_df is None:
-        raise HTTPException(status_code=404, detail="Could not load data from the latest upload.")
+        raise HTTPException(status_code=404, detail="Could not load data from the latest upload")
 
     # Calculate KPIs
     kpis = {}

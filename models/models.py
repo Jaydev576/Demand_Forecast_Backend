@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, Boolean, BigInteger, DateTime, func, ForeignKey, Text, Index
 from sqlalchemy.dialects.postgresql import JSONB
-from db import Base
+from db.db import Base
 
 class User(Base):
     __tablename__ = "users"
@@ -44,9 +44,7 @@ class Forecast(Base):
     end_date = Column(DateTime(timezone=True), index=True, nullable=False)
     num_days = Column(Integer, nullable=False)
     params = Column(JSONB, nullable=True)
-    predictions = Column(JSONB, nullable=False)          # list of dicts
-    # figure_json = Column(Text, nullable=True)            # plotly figure JSON string
-    # feature_importance_json = Column(Text, nullable=True)
+    predictions = Column(JSONB, nullable=False) 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
@@ -87,6 +85,7 @@ class DistinctFeature(Base):
     user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
     column_names = Column(JSONB, nullable=False)
     product = Column(JSONB, nullable=False)
+    category = Column(JSONB, nullable=False)
     city = Column(JSONB, nullable=False)
 
 class BusinessInsight(Base):

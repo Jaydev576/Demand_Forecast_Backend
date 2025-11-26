@@ -1,10 +1,8 @@
-# utils.py
 import os
-from models import DistinctFeature
-from typing import List, Optional, Tuple, Dict
+from typing import List, Optional, Dict
 import boto3
 from fastapi import HTTPException
-from fastapi.params import Depends
+# from fastapi.params import Depends
 from sqlalchemy.orm import Session
 import numpy as np
 import pandas as pd
@@ -12,8 +10,10 @@ from datetime import timedelta, datetime
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import xgboost as xgb
-import crud
-from settings import settings
+
+import services.crud as crud
+from models.models import DistinctFeature
+from core.config import settings
 
 # allowed categorical columns we will encode
 CATEGORICAL_COLS = ['product_category', 'product', 'city', 'season']
@@ -271,9 +271,7 @@ def get_discount(season, holiday):
         base += 0.05
     return base
 
-# ---------------------------
 # Future generation & prediction
-# ---------------------------
 def generate_future_features(product_category: str, product: str, city: str, num_days: int = 30,
                              base_df: pd.DataFrame = None, price: Optional[float] = None,
                              discount: Optional[float] = None, seed: Optional[int] = None,
@@ -373,7 +371,8 @@ def generate_future_features(product_category: str, product: str, city: str, num
     # return features list as-is (without target)
     return future_df, prod_df, features
 
-def sequential_predict(model, model_type: str, future_df: pd.DataFrame, historical_df: pd.DataFrame, features: List[str]):
+
+def sequential_predict(model, future_df: pd.DataFrame, historical_df: pd.DataFrame, features: List[str]):
     """
     Predict sequentially for future_df updating lags/rolling using predicted values (approx).
     Returns future_df with 'predicted_quantity_sold' column (rounded ints).
@@ -443,16 +442,19 @@ def extract_and_store_features(df: pd.DataFrame, user_id: int, db: Session):
         # Create a dictionary of product to its category
         product_category_map = df.groupby('product')['product_category'].first().to_dict()
         
+        category = df["product_category"].unique().tolist()
         city = df["city"].unique().tolist()
 
         feature_entry = DistinctFeature(
             user_id=user_id,
             column_names=column_names,
             product=product_category_map,
+            category=category,
             city=city,
         )
         db.add(feature_entry)
         db.commit()
 
     except Exception as e:
+        db.rollback()
         print(f"Error processing file for feature extraction: {e}")

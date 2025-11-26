@@ -1,13 +1,11 @@
-# crud.py
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 from sqlalchemy.orm import Session
-import models
-import schemas
-from security import get_password_hash
+import models.models as models
+import schemas.schemas as schemas
+from core.security import get_password_hash
 import secrets
-import db
 
 # -----------------------
 # Users / Upload helpers
@@ -100,8 +98,6 @@ def save_forecast(
     num_days: int,
     predictions: List[Dict[str, Any]],
     params: Optional[Dict[str, Any]] = None,
-    figure_json: Optional[str] = None,
-    feature_importance_json: Optional[str] = None,
 ) -> models.Forecast:
     """
     Persist a forecast run into forecasts table.
@@ -119,8 +115,6 @@ def save_forecast(
         num_days = num_days,
         params = params or {},
         predictions = predictions,
-        figure_json = figure_json,
-        feature_importance_json = feature_importance_json
     )
     db.add(rec)
     db.commit()
