@@ -1,13 +1,20 @@
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
-from email_utils import send_verification_email
+from utils.email import send_verification_email
+import os
 
-import auth
-import crud
-import schemas
-from db import get_db
+import utils.auth as auth
+import services.crud as crud
+import schemas.schemas as schemas
+from db.db import get_db
 
 router = APIRouter()
+
+def get_html_template(template_name: str):
+    template_path = os.path.join(os.path.dirname(__file__), "..", "templates", template_name)
+    with open(template_path, "r") as f:
+        return f.read()
 
 @router.post("/signup")
 async def create_user(user: schemas.UserCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
@@ -39,25 +46,20 @@ async def create_user(user: schemas.UserCreate, background_tasks: BackgroundTask
                 detail="Internal Server Error"
             )
 
-@router.get("/verify-email")
+@router.get("/verify-email", response_class=HTMLResponse)
 def verify_email(token: str, db: Session = Depends(get_db)):
     try:
         user = crud.get_user_by_email_verification_token(db, token=token)
         if not user:
-            raise HTTPException(
-                status_code=400, 
-                detail="Invalid verification token"
-            )
+            return HTMLResponse(content=get_html_template("verification_error.html"), status_code=400)
         
         crud.verify_user_email(db, user=user)
-        return {"message": "Email verified successfully. You can now log in."}
+        return HTMLResponse(content=get_html_template("verification_success.html"))
+    except HTTPException as e:
+        return HTMLResponse(content=get_html_template("verification_error.html"), status_code=e.status_code)
     except Exception as e:
         print(f"Error while verifying email: {e}")
-        if(not isinstance(e, HTTPException)):
-            raise HTTPException(
-                status_code=500, 
-                detail="Internal Server Error"
-            )
+        return HTMLResponse(content=get_html_template("verification_error.html"), status_code=500)
 
 
 @router.post("/login", response_model=schemas.Token)

@@ -3,12 +3,12 @@ import boto3
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 from botocore.exceptions import ClientError
-from auth import get_current_active_user
-from db import get_db
-from routes.train import train_pipeline
-from settings import settings
-from models import Upload, User
-from schemas import UploadCompleteRequest
+from utils.auth import get_current_active_user
+from db.db import get_db
+from utils.train import train_pipeline
+from core.config import settings
+from models.models import Upload, User
+from schemas.schemas import UploadCompleteRequest
 from typing import Optional
 
 router = APIRouter()
@@ -31,83 +31,6 @@ def make_s3_key(filename: str) -> str:
     ext = base.split(".")[-1].lower() if "." in base else "csv"
     ext = ext if len(ext) <= 8 else "csv"
     return f"uploads/{uuid.uuid4().hex}.{ext}"
-
-# Optional auth dependency; replace with your project's current_user dependency if available
-# def get_current_user_optional():
-#     # stub: replace with actual auth dependency or remove from route signature
-#     return None
-
-# @router.post("/csv-for-training", status_code=status.HTTP_201_CREATED)
-# async def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db), current_user: Optional[User] = Depends(get_current_user_optional)):
-#     """
-#     Uploads the given file directly to S3, and inserts a DB record in `uploads`.
-#     Returns upload metadata (db id + s3 key).
-#     """
-#     key = make_s3_key(file.filename)
-#     bucket_name = settings.S3_BUCKET_NAME
-
-#     # rewind file if needed
-#     try:
-#         file.file.seek(0)
-#     except Exception:
-#         pass
-
-#     try:
-#         s3.upload_fileobj(
-#             Fileobj=file.file,
-#             Bucket=bucket_name,
-#             Key=key,
-#             ExtraArgs={"ContentType": file.content_type or "application/octet-stream"},
-#         )
-#     except ClientError as e:
-#         raise HTTPException(status_code=500, detail=f"S3 upload failed: {e}")
-
-#     # get object metadata
-#     try:
-#         head = s3.head_object(Bucket=bucket_name, Key=key)
-#         size = head.get("ContentLength", 0)
-#     except ClientError as e:
-#         # if head fails, we still record entry but log/return an error
-#         size = 0
-#         # optional: delete the uploaded object to avoid orphaned objects
-#         try:
-#             s3.delete_object(Bucket=bucket_name, Key=key)
-#         except Exception:
-#             pass
-#         raise HTTPException(status_code=500, detail=f"S3 head_object failed after upload: {e}")
-
-#     # --- insert s3 metadata into db ---
-#     try:
-#         user_id = current_user.id if current_user is not None else None
-#         row = Upload(
-#             user_id=user_id,
-#             filename=file.filename,
-#             key=key,
-#             bucket=bucket_name,
-#             size_bytes=int(size),
-#             content_type=file.content_type or "application/octet-stream",
-#         )
-#         db.add(row)
-#         db.commit()
-#         db.refresh(row)
-#     except Exception as e:
-#         db.rollback()
-#         # optionally delete uploaded S3 object to avoid orphaned objects
-#         try:
-#             s3.delete_object(Bucket=bucket_name, Key=key)
-#         except Exception:
-#             pass
-#         raise HTTPException(status_code=500, detail=f"DB insert failed: {e}")
-
-#     return {
-#         "id": row.id,
-#         "filename": row.filename,
-#         "s3_key": row.key,
-#         "bucket": row.bucket,
-#         "size_bytes": row.size_bytes,
-#         "content_type": row.content_type,
-#     }
-
 
 @router.get("/generate-upload-url")
 def generate_presigned_upload_url(
@@ -214,3 +137,75 @@ def get_download_url(upload_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Failed to generate presigned GET URL: {e}")
 
     return {"url": url}
+
+
+# @router.post("/csv-for-training", status_code=status.HTTP_201_CREATED)
+# async def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db), current_user: Optional[User] = Depends(get_current_user_optional)):
+#     """
+#     Uploads the given file directly to S3, and inserts a DB record in `uploads`.
+#     Returns upload metadata (db id + s3 key).
+#     """
+#     key = make_s3_key(file.filename)
+#     bucket_name = settings.S3_BUCKET_NAME
+
+#     # rewind file if needed
+#     try:
+#         file.file.seek(0)
+#     except Exception:
+#         pass
+
+#     try:
+#         s3.upload_fileobj(
+#             Fileobj=file.file,
+#             Bucket=bucket_name,
+#             Key=key,
+#             ExtraArgs={"ContentType": file.content_type or "application/octet-stream"},
+#         )
+#     except ClientError as e:
+#         raise HTTPException(status_code=500, detail=f"S3 upload failed: {e}")
+
+#     # get object metadata
+#     try:
+#         head = s3.head_object(Bucket=bucket_name, Key=key)
+#         size = head.get("ContentLength", 0)
+#     except ClientError as e:
+#         # if head fails, we still record entry but log/return an error
+#         size = 0
+#         # optional: delete the uploaded object to avoid orphaned objects
+#         try:
+#             s3.delete_object(Bucket=bucket_name, Key=key)
+#         except Exception:
+#             pass
+#         raise HTTPException(status_code=500, detail=f"S3 head_object failed after upload: {e}")
+
+#     # --- insert s3 metadata into db ---
+#     try:
+#         user_id = current_user.id if current_user is not None else None
+#         row = Upload(
+#             user_id=user_id,
+#             filename=file.filename,
+#             key=key,
+#             bucket=bucket_name,
+#             size_bytes=int(size),
+#             content_type=file.content_type or "application/octet-stream",
+#         )
+#         db.add(row)
+#         db.commit()
+#         db.refresh(row)
+#     except Exception as e:
+#         db.rollback()
+#         # optionally delete uploaded S3 object to avoid orphaned objects
+#         try:
+#             s3.delete_object(Bucket=bucket_name, Key=key)
+#         except Exception:
+#             pass
+#         raise HTTPException(status_code=500, detail=f"DB insert failed: {e}")
+
+#     return {
+#         "id": row.id,
+#         "filename": row.filename,
+#         "s3_key": row.key,
+#         "bucket": row.bucket,
+#         "size_bytes": row.size_bytes,
+#         "content_type": row.content_type,
+#     }

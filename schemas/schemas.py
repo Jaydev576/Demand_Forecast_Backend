@@ -1,8 +1,6 @@
-# schemas.py
 from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field
 from datetime import datetime
-
 
 # -----------------------
 # User related schemas

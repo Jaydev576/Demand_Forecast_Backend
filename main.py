@@ -1,8 +1,8 @@
 from fastapi import FastAPI
-from db import engine
-import models
+from db.db import engine
+import models.models as models
 from fastapi.middleware.cors import CORSMiddleware
-from routes import auth, upload, user, train, feature, insights
+from routers import auth, upload, user, feature, insights, predict
 
 # models.Base.metadata.drop_all(bind=engine) # to drop all tables in db
 models.Base.metadata.create_all(bind=engine)
@@ -13,8 +13,7 @@ app = FastAPI()
 origins = [
     "http://127.0.0.1",
     "http://localhost:3000",
-    "http://localhost:5173", 
-    "http://localhost:5473",
+    "http://localhost:5173",
 ]
 
 # Add CORS middleware
@@ -28,12 +27,12 @@ app.add_middleware(
 
 app.include_router(auth.router, prefix="/auth")
 app.include_router(upload.router, prefix="/upload")
-app.include_router(train.router, prefix="/train")
+app.include_router(predict.router, prefix="/predict")
 app.include_router(user.router, prefix="/user")
 app.include_router(feature.router, prefix="/feature")
 app.include_router(insights.router, prefix="/insights")
 
 
-@app.get("/api")
+@app.get("/")
 def read_root():
-    return {"massage": "Welcome to backend!!"}
+    return {"massage": "FastAPI is running!!"}

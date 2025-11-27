@@ -3,10 +3,38 @@
 <head>
     <title>Training Complete</title>
 </head>
-<body>
-    <h1>Hello, {{ username }}!</h1>
-    <p>Your model training is complete.</p>
-    <p>You can now use your new model to make predictions.</p>
-    <p>Regards,<br>The Demand Forecast Team</p>
+<body style="font-family: Arial, sans-serif; background-color: #f7f7f7; padding: 20px;">
+    <div style="max-width: 600px; margin: auto; background: #ffffff; padding: 25px; border-radius: 8px;">
+
+        <h2 style="color: #333; margin-top: 0;">Hello, {{ username }}!</h2>
+
+        <p style="font-size: 15px; color: #555;">
+            Your model has officially finished training.
+        </p>
+
+        <p style="font-size: 15px; color: #555;">
+            You can now start making predictions.
+        </p>
+
+        <p style="text-align: center; margin: 30px 0;">
+            <a href="{{ forecast_link }}"
+               style="display: inline-block; padding: 12px 20px; background-color: #4a90e2; color: #fff; text-decoration: none; border-radius: 5px; font-size: 16px;">
+                Start Predicting
+            </a>
+        </p>
+
+        <p style="font-size: 14px; color: #777;">
+            If the button doesn’t work, you can access your model directly using this link:<br>
+            <a href="{{ forecast_link }}">{{ forecast_link }}</a>
+        </p>
+
+        <hr style="border: 0; border-top: 1px solid #eee; margin: 30px 0;">
+
+        <p style="font-size: 13px; color: #999;">
+            Regards,<br>
+            The Demand Forecast Team
+        </p>
+
+    </div>
 </body>
 </html>
