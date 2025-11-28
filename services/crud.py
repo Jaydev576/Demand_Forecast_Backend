@@ -57,6 +57,9 @@ def create_upload(db: Session, upload: schemas.UploadCreate) -> models.Upload:
     db.refresh(db_upload)
     return db_upload
 
+def get_upload_by_userid(db: Session, user_id: int) -> List[models.Upload]:
+    return db.query(models.Upload).filter(models.Upload.user_id == user_id).all()
+
 def get_upload_by_id(db: Session, upload_id: int) -> Optional[models.Upload]:
     return db.query(models.Upload).filter(models.Upload.id == upload_id).first()
 
@@ -287,3 +290,6 @@ def get_latest_business_insight(db: Session, user_id: int) -> Optional[models.Bu
         .order_by(models.BusinessInsight.created_at.desc())
         .first()
     )
+
+def list_forecasts_for_user(db: Session, user_id: int) -> List[models.Forecast]:
+    return db.query(models.Forecast).filter(models.Forecast.user_id == user_id).order_by(models.Forecast.created_at.desc()).all()

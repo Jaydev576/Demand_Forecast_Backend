@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 
 from utils.auth import get_current_user
 from models.models import User
-from schemas.schemas import PredictRequest
+from schemas.schemas import PredictRequest, Forecast
 import core.config as config
 from utils.helpers import generate_future_features, get_csv_data, preprocess_and_feature_engineer, sequential_predict
 import services.crud as crud
@@ -240,20 +240,20 @@ def predict(req: PredictRequest, user: User = Depends(get_current_user), db: Ses
             print("Failed to persist forecast: ", e)
             forecast_id = None
 
-        return JSONResponse({
-            "product": req.product,
-            "city": req.city,
-            "num_days": req.num_days,
-            "predictions": preds_table,
-            # "figure_json": figure_json,
-            # "feature_importance_json": fi_json,
-            "forecast_id": forecast_id
-        })
+        return Forecast(
+            id=forecast_id,
+            product=req.product,
+            product_category=req.product_category,
+            city=req.city,
+            num_days=req.num_days,
+            predictions=preds_table,
+            created_at=datetime.datetime.now()
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
     
 
-@router.get("/get_forecasts", summary="Get list of forecasts for the current user")
+@router.get("/get_forecasts", response_model=list[Forecast], summary="Get list of forecasts for the current user")
 def get_forecasts(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """
     Returns a list of forecasts made by the current user.
@@ -261,8 +261,9 @@ def get_forecasts(user: User = Depends(get_current_user), db: Session = Depends(
     try:
         forecasts = crud.list_forecasts_for_user(db, user_id=user.id)
         if not forecasts:
-            return JSONResponse({"forecasts": []})
+            return []
         
-        return JSONResponse({"forecasts": [f.to_dict() for f in forecasts]})
+        return forecasts
     except Exception as e:
+        print(f"Error fetching forecasts for user {user.id}: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {e}")

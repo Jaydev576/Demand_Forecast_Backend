@@ -99,6 +99,21 @@ class PredictResponse(BaseModel):
     class Config:
         orm_mode = True
 
+class Forecast(BaseModel):
+    id: int
+    product_category: str
+    product: str
+    city: str
+    num_days: int
+    predictions: list[PredictionRecord]
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+class ForecastOut(BaseModel):
+    forecasts: list[Forecast]
+
 class BusinessInsight(BaseModel):
     id: int
     user_id: int

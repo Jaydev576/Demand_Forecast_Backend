@@ -1,8 +1,10 @@
+from datetime import datetime, timezone
 import uuid
 import boto3
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 from botocore.exceptions import ClientError
+from services import crud
 from utils.auth import get_current_active_user
 from db.db import get_db
 from utils.train import train_pipeline
@@ -43,6 +45,13 @@ def generate_presigned_upload_url(
     Generates a presigned PUT URL that the client can use to upload a file directly to S3.
     Creates a DB Upload record (size_bytes=0 for now). Caller should call /upload-complete after client uploads.
     """
+    uploads = crud.get_upload_by_userid(db, user_id=current_user.id)
+    if uploads:
+        upload = uploads[0]
+        timeDelta = datetime.now(timezone.utc) - upload.uploaded_at
+        diff = timeDelta.total_seconds()/(60*60*24)
+        if diff < 60:
+            raise HTTPException(status_code=400, detail=f"Wait for {int(60 - diff)} days before uploading a new file.")
     bucket_name = settings.S3_BUCKET_NAME
     key = make_s3_key(filename)
 
